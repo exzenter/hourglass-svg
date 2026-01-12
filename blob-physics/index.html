@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hourglass - Blob Physics</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: #fff;
+        }
+
+        canvas {
+            display: block;
+            transition: transform 1s ease-in-out;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="hourglass"></canvas>
+    <script>
+        const canvas = document.getElementById('hourglass');
+        const ctx = canvas.getContext('2d');
+
+        // Canvas size
+        const width = 600;
+        const height = 650;
+        canvas.width = width;
+        canvas.height = height;
+
+        // Style config
+        const LINE_WIDTH = 8;
+        const STROKE_COLOR = '#000';
+
+        // Hourglass Geometry
+        const cx = width / 2;
+        const cy = height / 2;
+
+        const glassWidthTop = 290;
+        const capWidth = 340;
+        const capHeight = 35;
+        const capRadius = 18;
+
+        const verticalPadding = 60;
+        const bodyTopY = verticalPadding + capHeight;
+        const bodyBottomY = height - verticalPadding - capHeight;
+
+        const neckWidth = 30;
+        const bulbHeight = (bodyBottomY - bodyTopY) / 2;
+        const SAND_INSET = 16;
+
+        // Animation State
+        let currentState = 'FLOWING';
+
+        const INITIAL_SAND = 0.75;
+        let topSandRatio = INITIAL_SAND;
+        const sandFlowRate = 0.0006;
+
+        // ===========================================
+        // MULTI-STRAND SAND SYSTEM
+        // ===========================================
+
+        const NUM_STRANDS = 5;  // 4-6 strands
+        const STRAND_WIDTH = 1.5;  // Each strand is thin
+        const STRAND_SPREAD = 8;   // Total width spread of strands
+
+        // Each strand has its own timing and state
+        const strands = [];
+        for (let i = 0; i < NUM_STRANDS; i++) {
+            strands.push({
+                xOffset: (i - (NUM_STRANDS - 1) / 2) * (STRAND_SPREAD / (NUM_STRANDS - 1)),
+                delay: Math.random() * 30,  // Random timing offset
+                timer: Math.random() * 30,
+                dropping: false,
+                dropY: 0,
+                dropVY: 0,
+                dropHeight: 0
+            });
+        }
+
+        // Splash effects when strands hit pile
+        const splashes = [];
+
+        // Morphing State
+        let settleProgress = 0;
+
+        function getSandSurfaceY() {
+            const sandHeight = bulbHeight * Math.pow(topSandRatio, 0.5);
+            return cy - sandHeight;
+        }
+
+        function getInsetGlassWidthAt(targetY) {
+            const p0y = bodyTopY;
+            const p1y = bodyTopY + bulbHeight * 0.5;
+            const p2y = cy - bulbHeight * 0.2;
+            const p3y = cy;
+
+            const p0x = cx - glassWidthTop / 2 + SAND_INSET;
+            const p1x = cx - glassWidthTop / 2 + SAND_INSET;
+            const p2x = cx - neckWidth / 2 - 10 + SAND_INSET;
+            const p3x = cx - neckWidth / 2 + SAND_INSET;
+
+            let low = 0, high = 1;
+            let t = 0.5;
+            for (let i = 0; i < 10; i++) {
+                t = (low + high) / 2;
+                const yt = Math.pow(1 - t, 3) * p0y + 3 * Math.pow(1 - t, 2) * t * p1y + 3 * (1 - t) * t * t * p2y + t * t * t * p3y;
+                if (yt < targetY) {
+                    low = t;
+                } else {
+                    high = t;
+                }
+            }
+            const xt = Math.pow(1 - t, 3) * p0x + 3 * Math.pow(1 - t, 2) * t * p1x + 3 * (1 - t) * t * t * p2x + t * t * t * p3x;
+            return (cx - xt) * 2;
+        }
+
+        function drawHourglassOutline() {
+            ctx.lineWidth = LINE_WIDTH;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.strokeStyle = STROKE_COLOR;
+            ctx.fillStyle = '#fff';
+
+            // Top Cap
+            ctx.beginPath();
+            ctx.roundRect(cx - capWidth / 2, verticalPadding, capWidth, capHeight, capRadius);
+            ctx.stroke();
+
+            // Bottom Cap
+            const bottomCapYPosition = height - verticalPadding - capHeight;
+            ctx.beginPath();
+            ctx.roundRect(cx - capWidth / 2, bottomCapYPosition, capWidth, capHeight, capRadius);
+            ctx.stroke();
+
+            // Glass Body
+            ctx.beginPath();
+            ctx.moveTo(cx - glassWidthTop / 2, bodyTopY);
+            ctx.bezierCurveTo(cx - glassWidthTop / 2, bodyTopY + bulbHeight * 0.5, cx - neckWidth / 2 - 10, cy - bulbHeight * 0.2, cx - neckWidth / 2, cy);
+            ctx.bezierCurveTo(cx - neckWidth / 2 - 10, cy + bulbHeight * 0.2, cx - glassWidthTop / 2, bodyBottomY - bulbHeight * 0.5, cx - glassWidthTop / 2, bodyBottomY);
+            ctx.lineTo(cx + glassWidthTop / 2, bodyBottomY);
+            ctx.bezierCurveTo(cx + glassWidthTop / 2, bodyBottomY - bulbHeight * 0.5, cx + neckWidth / 2 + 10, cy + bulbHeight * 0.2, cx + neckWidth / 2, cy);
+            ctx.bezierCurveTo(cx + neckWidth / 2 + 10, cy - bulbHeight * 0.2, cx + glassWidthTop / 2, bodyTopY + bulbHeight * 0.5, cx + glassWidthTop / 2, bodyTopY);
+            ctx.lineTo(cx - glassWidthTop / 2, bodyTopY);
+            ctx.stroke();
+        }
+
+        // Update splashes (no visible drawing, just for pile wobble effect)
+        function updateSplashes() {
+            for (let i = splashes.length - 1; i >= 0; i--) {
+                const s = splashes[i];
+
+                // Animate splash lifecycle (for wobble tracking)
+                s.alpha -= 0.04;
+
+                if (s.alpha <= 0) {
+                    splashes.splice(i, 1);
+                }
+            }
+        }
+
+        // Create splash when strand hits pile
+        function createSplash(x, y) {
+            splashes.push({
+                x: x + (Math.random() - 0.5) * 4,
+                y: y,
+                radius: 2 + Math.random() * 2,
+                growSpeed: 0.3 + Math.random() * 0.3,
+                alpha: 0.9,
+                scaleX: 1,
+                scaleY: 1
+            });
+        }
+
+        // Draw bottom pile with wobble
+        function drawBottomPile() {
+            const progress = 1 - (topSandRatio / INITIAL_SAND);
+            if (progress < 0.001) return null;
+
+            const maxPileHeight = bulbHeight * 0.6;
+            const heightProg = Math.pow(progress, 1.8);
+            const widthProg = Math.pow(progress, 0.7);
+
+            const currentPileHeight = maxPileHeight * heightProg;
+            const currentHalfWidth = (glassWidthTop / 2 - SAND_INSET) * widthProg;
+            const basePileY = bodyBottomY - LINE_WIDTH / 2;
+            const pilePeakY = basePileY - currentPileHeight;
+
+            if (currentPileHeight < 1) return null;
+
+            ctx.lineWidth = LINE_WIDTH;
+            ctx.strokeStyle = STROKE_COLOR;
+            ctx.lineCap = 'round';
+
+            // Draw main pile shape with organic wobble
+            const time = Date.now() * 0.001;
+            const wobble1 = Math.sin(time * 2.5) * 2;
+            const wobble2 = Math.sin(time * 3 + 1) * 2;
+
+            // Extra wobble from recent splashes
+            let splashWobble = 0;
+            for (const s of splashes) {
+                splashWobble += s.alpha * 1.5;
+            }
+
+            ctx.beginPath();
+            ctx.moveTo(cx - currentHalfWidth, basePileY);
+            ctx.quadraticCurveTo(
+                cx - currentHalfWidth * 0.3 + wobble1,
+                pilePeakY + 12,
+                cx,
+                pilePeakY + Math.sin(time * 3) * 1.5 - splashWobble
+            );
+            ctx.quadraticCurveTo(
+                cx + currentHalfWidth * 0.3 + wobble2,
+                pilePeakY + 12,
+                cx + currentHalfWidth,
+                basePileY
+            );
+            ctx.stroke();
+
+            return { pilePeakY, basePileY };
+        }
+
+        function drawFlowingState() {
+            ctx.lineWidth = LINE_WIDTH;
+            ctx.strokeStyle = STROKE_COLOR;
+            ctx.lineJoin = 'round';
+
+            // --- TOP SAND VOLUME ---
+            if (topSandRatio > 0.01) {
+                const sandTopY = getSandSurfaceY();
+
+                // Draw Walls (clipped)
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(0, sandTopY, width, cy - sandTopY);
+                ctx.clip();
+
+                ctx.beginPath();
+                ctx.moveTo(cx - glassWidthTop / 2 + SAND_INSET, bodyTopY);
+                ctx.bezierCurveTo(
+                    cx - glassWidthTop / 2 + SAND_INSET, bodyTopY + bulbHeight * 0.5,
+                    cx - neckWidth / 2 - 10 + SAND_INSET, cy - bulbHeight * 0.2,
+                    cx, cy
+                );
+                ctx.bezierCurveTo(
+                    cx + neckWidth / 2 + 10 - SAND_INSET, cy - bulbHeight * 0.2,
+                    cx + glassWidthTop / 2 - SAND_INSET, bodyTopY + bulbHeight * 0.5,
+                    cx + glassWidthTop / 2 - SAND_INSET, bodyTopY
+                );
+                ctx.stroke();
+                ctx.restore();
+
+                // Top Surface
+                const surfaceWidth = getInsetGlassWidthAt(sandTopY);
+                const leftX = cx - surfaceWidth / 2;
+                const rightX = cx + surfaceWidth / 2;
+                const time = Date.now() * 0.001;
+
+                ctx.beginPath();
+                ctx.moveTo(leftX, sandTopY);
+                ctx.bezierCurveTo(
+                    leftX + surfaceWidth * 0.25, sandTopY - 15 + Math.sin(time * 2) * 2,
+                    rightX - surfaceWidth * 0.25, sandTopY + 15 + Math.sin(time * 2.3) * 2,
+                    rightX, sandTopY
+                );
+                ctx.stroke();
+            }
+
+            // --- DRAW BOTTOM PILE FIRST ---
+            const pileInfo = drawBottomPile();
+
+            // Calculate pile peak for collision
+            const progress = 1 - (topSandRatio / INITIAL_SAND);
+            const maxPileHeight = bulbHeight * 0.6;
+            const heightProg = Math.pow(progress, 1.8);
+            const currentPileHeight = maxPileHeight * heightProg;
+            const basePileY = bodyBottomY - LINE_WIDTH / 2;
+            const pilePeakY = basePileY - currentPileHeight;
+
+            // --- UPDATE SPLASHES (invisible, just for pile wobble) ---
+            updateSplashes();
+
+            // --- MULTI-STRAND SAND FLOW ---
+            if (topSandRatio > 0.01 && currentState === 'FLOWING') {
+                ctx.strokeStyle = STROKE_COLOR;
+                ctx.lineCap = 'round';
+
+                for (const strand of strands) {
+                    strand.timer++;
+
+                    // Wait for random delay before starting this strand
+                    if (strand.timer < strand.delay) continue;
+
+                    if (!strand.dropping) {
+                        // Start a new drop
+                        strand.dropping = true;
+                        strand.dropY = cy + 2;
+                        strand.dropVY = 0.5 + Math.random() * 0.5;
+                        strand.dropHeight = 8 + Math.random() * 6;
+                    }
+
+                    if (strand.dropping) {
+                        // Update drop position
+                        strand.dropVY += 0.15;  // Gravity
+                        strand.dropY += strand.dropVY;
+
+                        // Calculate strand X position
+                        const strandX = cx + strand.xOffset + Math.sin(strand.dropY * 0.05) * 0.5;
+
+                        // Draw strand with vertical-only blur (ghosting)
+                        // Limits spill to up/down only, sides stay sharp
+
+                        // 1. Faint trail/lead (Vertical Blur)
+                        ctx.lineWidth = STRAND_WIDTH;
+                        ctx.globalAlpha = 0.2;
+                        ctx.beginPath();
+                        ctx.moveTo(strandX, cy);
+                        ctx.lineTo(strandX, strand.dropY + 4); // Lead
+                        ctx.stroke();
+
+                        // 2. Main Body (Opaque)
+                        ctx.globalAlpha = 1.0;
+                        ctx.beginPath();
+                        ctx.moveTo(strandX, cy);
+                        ctx.lineTo(strandX, strand.dropY);
+                        ctx.stroke();
+
+                        // Check collision with pile
+                        if (strand.dropY >= pilePeakY - 2) {
+                            // Create splash effect
+                            createSplash(strandX, pilePeakY);
+
+                            // Reset strand with new random delay
+                            strand.dropping = false;
+                            strand.delay = 10 + Math.random() * 25;
+                            strand.timer = 0;
+                        }
+
+                        // Safety: remove if off screen
+                        if (strand.dropY > height) {
+                            strand.dropping = false;
+                            strand.delay = 10 + Math.random() * 20;
+                            strand.timer = 0;
+                        }
+                    }
+                }
+            }
+        }
+
+        function drawSettlingState() {
+            ctx.lineWidth = LINE_WIDTH;
+            ctx.strokeStyle = STROKE_COLOR;
+            ctx.lineJoin = 'round';
+
+            const t = settleProgress;
+
+            const targetSandHeight = bulbHeight * Math.pow(INITIAL_SAND, 0.5);
+            const targetSurfaceY = cy - targetSandHeight;
+
+            const maxPileHeight = bulbHeight * 0.6;
+            const pileHeight = maxPileHeight;
+            const startSurfaceY = bodyTopY;
+            const startPeakY = bodyTopY + pileHeight;
+
+            const currentTipY = startPeakY + (cy - startPeakY) * t;
+            const currentBaseY = bodyTopY + (targetSurfaceY - bodyTopY) * t;
+
+            const startLeftX = cx - (glassWidthTop / 2 - SAND_INSET);
+
+            ctx.beginPath();
+            ctx.moveTo(startLeftX, currentBaseY);
+
+            const pileCP1x = cx;
+            const pileCP1y = startPeakY - 30;
+            const funnelCP1x = cx - glassWidthTop / 2 + SAND_INSET;
+            const funnelCP1y = bodyTopY + bulbHeight * 0.5;
+            const funnelCP2x = cx - neckWidth / 2 - 10 + SAND_INSET;
+            const funnelCP2y = cy - bulbHeight * 0.2;
+
+            const cp1x = pileCP1x + (funnelCP1x - pileCP1x) * t;
+            const cp1y = pileCP1y + (funnelCP1y - pileCP1y) * t;
+            const pileCP2x = cx;
+            const pileCP2y = startPeakY - 30;
+            const cp2x = pileCP2x + (funnelCP2x - pileCP2x) * t;
+            const cp2y = pileCP2y + (funnelCP2y - pileCP2y) * t;
+
+            ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, cx, currentTipY);
+
+            const rightBaseX = cx + (glassWidthTop / 2 - SAND_INSET);
+
+            ctx.bezierCurveTo(
+                width - cp2x, cp2y,
+                width - cp1x, cp1y,
+                rightBaseX, currentBaseY
+            );
+
+            const surfaceWidth = rightBaseX - startLeftX;
+            const leftX = startLeftX;
+            const rightX = rightBaseX;
+            const waveAmp = 15 * t;
+
+            ctx.bezierCurveTo(
+                rightX - surfaceWidth / 4, currentBaseY + waveAmp,
+                leftX + surfaceWidth / 4, currentBaseY - waveAmp,
+                leftX, currentBaseY
+            );
+
+            ctx.stroke();
+        }
+
+        function resetStrands() {
+            for (const strand of strands) {
+                strand.delay = Math.random() * 30;
+                strand.timer = 0;
+                strand.dropping = false;
+                strand.dropY = 0;
+                strand.dropVY = 0;
+            }
+            splashes.length = 0;
+        }
+
+        function animate() {
+            ctx.clearRect(0, 0, width, height);
+
+            drawHourglassOutline();
+
+            if (currentState === 'FLOWING') {
+                drawFlowingState();
+
+                if (topSandRatio > 0) {
+                    topSandRatio -= sandFlowRate;
+                    if (topSandRatio < 0) topSandRatio = 0;
+                } else {
+                    currentState = 'WAITING';
+                    setTimeout(() => {
+                        currentState = 'FLIPPING';
+                        canvas.style.transition = 'transform 0.6s ease-in-out';
+                        canvas.style.transform = 'rotate(180deg)';
+
+                        setTimeout(() => {
+                            canvas.style.transition = 'none';
+                            canvas.style.transform = 'rotate(0deg)';
+                            currentState = 'SETTLING';
+                            settleProgress = 0;
+                            resetStrands();
+                        }, 600);
+                    }, 2000);
+                }
+            }
+            else if (currentState === 'WAITING') {
+                drawFlowingState();
+            }
+            else if (currentState === 'FLIPPING') {
+                drawFlowingState();
+            }
+            else if (currentState === 'SETTLING') {
+                drawSettlingState();
+
+                settleProgress += 0.045;
+                if (settleProgress >= 1) {
+                    currentState = 'FLOWING';
+                    topSandRatio = INITIAL_SAND;
+                    resetStrands();
+                }
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        animate();
+    </script>
+</body>
+
+</html>
