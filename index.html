@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hourglass Animation</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: #fff;
+        }
+
+        canvas {
+            display: block;
+            transition: transform 1s ease-in-out;
+            /* Smooth rotation */
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="hourglass"></canvas>
+    <script>
+        const canvas = document.getElementById('hourglass');
+        const ctx = canvas.getContext('2d');
+
+        // Canvas size
+        const width = 600;
+        const height = 650;
+        canvas.width = width;
+        canvas.height = height;
+
+        // Style config
+        const LINE_WIDTH = 8;
+        const STROKE_COLOR = '#000';
+
+        // Hourglass Geometry
+        const cx = width / 2;
+        const cy = height / 2;
+
+        const glassWidthTop = 290;
+        const capWidth = 340;
+        const capHeight = 35;
+        const capRadius = 18;
+
+        const verticalPadding = 60;
+        const bodyTopY = verticalPadding + capHeight;
+        const bodyBottomY = height - verticalPadding - capHeight;
+
+        const neckWidth = 30;
+        const bulbHeight = (bodyBottomY - bodyTopY) / 2;
+        const SAND_INSET = 16;
+
+        // Animation State
+        /* State Machine:
+           1. FLOWING: Sand flowing down
+           2. WAITING: Sand finished, delaying before flip
+           3. FLIPPING: CSS Rotation happening
+           4. SETTLING: Sand morphing from "Pile shape" (at top now) to "Funnel shape"
+        */
+        let currentState = 'FLOWING';
+
+        const INITIAL_SAND = 0.75;
+        let topSandRatio = INITIAL_SAND;
+        const sandFlowRate = 0.0006;
+
+        // Droplets
+        const droplets = [];
+        let formingDroplet = { size: 0, max: 0 };
+        const FORMING_SPEED = 0.4;
+        const DROPLET_INTERVAL = 14;
+
+        // Visual Rotation State
+        let rotationAngle = 0;
+
+        // Morphing State
+        let settleProgress = 0; // 0 to 1
+
+        function getSandSurfaceY() {
+            const sandHeight = bulbHeight * Math.pow(topSandRatio, 0.5);
+            return cy - sandHeight;
+        }
+
+        function getPileHeightForRatio(ratio) {
+            const progress = 1 - (ratio / INITIAL_SAND);
+            const maxPileHeight = bulbHeight * 0.6;
+            const heightProg = Math.pow(progress, 1.8);
+            return maxPileHeight * heightProg;
+        }
+
+        function getInsetGlassWidthAt(targetY) {
+            const p0y = bodyTopY;
+            const p1y = bodyTopY + bulbHeight * 0.5;
+            const p2y = cy - bulbHeight * 0.2;
+            const p3y = cy;
+
+            const p0x = cx - glassWidthTop / 2 + SAND_INSET;
+            const p1x = cx - glassWidthTop / 2 + SAND_INSET;
+            const p2x = cx - neckWidth / 2 - 10 + SAND_INSET;
+            const p3x = cx - neckWidth / 2 + SAND_INSET;
+
+            let low = 0, high = 1;
+            let t = 0.5;
+            // Binary search for t
+            for (let i = 0; i < 10; i++) {
+                t = (low + high) / 2;
+                const yt = Math.pow(1 - t, 3) * p0y + 3 * Math.pow(1 - t, 2) * t * p1y + 3 * (1 - t) * t * t * p2y + t * t * t * p3y;
+                if (yt < targetY) {
+                    low = t;
+                } else {
+                    high = t;
+                }
+            }
+            const xt = Math.pow(1 - t, 3) * p0x + 3 * Math.pow(1 - t, 2) * t * p1x + 3 * (1 - t) * t * t * p2x + t * t * t * p3x;
+            return (cx - xt) * 2;
+        }
+
+        function drawHourglassOutline() {
+            ctx.lineWidth = LINE_WIDTH;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.strokeStyle = STROKE_COLOR;
+            ctx.fillStyle = '#fff';
+
+            // Top Cap
+            ctx.beginPath();
+            ctx.roundRect(cx - capWidth / 2, verticalPadding, capWidth, capHeight, capRadius);
+            ctx.stroke();
+
+            // Bottom Cap
+            const bottomCapYPosition = height - verticalPadding - capHeight;
+            ctx.beginPath();
+            ctx.roundRect(cx - capWidth / 2, bottomCapYPosition, capWidth, capHeight, capRadius);
+            ctx.stroke();
+
+            // Glass Body
+            ctx.beginPath();
+            ctx.moveTo(cx - glassWidthTop / 2, bodyTopY);
+            ctx.bezierCurveTo(cx - glassWidthTop / 2, bodyTopY + bulbHeight * 0.5, cx - neckWidth / 2 - 10, cy - bulbHeight * 0.2, cx - neckWidth / 2, cy);
+            ctx.bezierCurveTo(cx - neckWidth / 2 - 10, cy + bulbHeight * 0.2, cx - glassWidthTop / 2, bodyBottomY - bulbHeight * 0.5, cx - glassWidthTop / 2, bodyBottomY);
+            ctx.lineTo(cx + glassWidthTop / 2, bodyBottomY);
+            ctx.bezierCurveTo(cx + glassWidthTop / 2, bodyBottomY - bulbHeight * 0.5, cx + neckWidth / 2 + 10, cy + bulbHeight * 0.2, cx + neckWidth / 2, cy);
+            ctx.bezierCurveTo(cx + neckWidth / 2 + 10, cy - bulbHeight * 0.2, cx + glassWidthTop / 2, bodyTopY + bulbHeight * 0.5, cx + glassWidthTop / 2, bodyTopY);
+            ctx.lineTo(cx - glassWidthTop / 2, bodyTopY);
+            ctx.stroke();
+        }
+
+        function drawFlowingState() {
+            ctx.lineWidth = LINE_WIDTH;
+            ctx.strokeStyle = STROKE_COLOR;
+            ctx.lineJoin = 'round';
+
+            // --- TOP SAND VOLUME ---
+            if (topSandRatio > 0.01) {
+                const sandTopY = getSandSurfaceY();
+
+                // Draw Walls
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(0, sandTopY, width, cy - sandTopY);
+                ctx.clip();
+
+                ctx.beginPath();
+                // Funnel Shape
+                ctx.moveTo(cx - glassWidthTop / 2 + SAND_INSET, bodyTopY);
+                ctx.bezierCurveTo(
+                    cx - glassWidthTop / 2 + SAND_INSET, bodyTopY + bulbHeight * 0.5,
+                    cx - neckWidth / 2 - 10 + SAND_INSET, cy - bulbHeight * 0.2,
+                    cx, cy
+                );
+
+                ctx.bezierCurveTo(
+                    cx + neckWidth / 2 + 10 - SAND_INSET, cy - bulbHeight * 0.2,
+                    cx + glassWidthTop / 2 - SAND_INSET, bodyTopY + bulbHeight * 0.5,
+                    cx + glassWidthTop / 2 - SAND_INSET, bodyTopY
+                );
+
+                ctx.stroke();
+                ctx.restore();
+
+                // Top Surface
+                const surfaceWidth = getInsetGlassWidthAt(sandTopY);
+                const leftX = cx - surfaceWidth / 2;
+                const rightX = cx + surfaceWidth / 2;
+
+                ctx.beginPath();
+                ctx.moveTo(leftX, sandTopY);
+                ctx.bezierCurveTo(leftX + surfaceWidth * 0.25, sandTopY - 15, rightX - surfaceWidth * 0.25, sandTopY + 15, rightX, sandTopY);
+                ctx.stroke();
+            }
+
+            // --- BOTTOM SAND PILE ---
+
+            // To ensure droplets fall all the way down initially:
+            // The pile height depends on accumulated sand.
+            // Initially, ratio is high, fallen is low. Height is near 0.
+
+            const bottomRatio = INITIAL_SAND - topSandRatio;
+            const progress = 1 - (topSandRatio / INITIAL_SAND);
+
+            if (bottomRatio > 0.001) {
+                const maxPileHeight = bulbHeight * 0.6;
+                const heightProg = Math.pow(progress, 1.8);
+                const widthProg = Math.pow(progress, 0.7);
+
+                const currentPileHeight = maxPileHeight * heightProg;
+                const currentHalfWidth = (glassWidthTop / 2 - SAND_INSET) * widthProg;
+
+                const basePileY = bodyBottomY - LINE_WIDTH / 2;
+                const pilePeakY = basePileY - currentPileHeight;
+
+                if (currentPileHeight > 1) {
+                    ctx.lineWidth = LINE_WIDTH;
+                    ctx.beginPath();
+
+                    ctx.moveTo(cx - currentHalfWidth, basePileY);
+                    ctx.quadraticCurveTo(cx, pilePeakY + 10, cx, pilePeakY);
+                    ctx.quadraticCurveTo(cx, pilePeakY + 10, cx + currentHalfWidth, basePileY);
+                    ctx.stroke();
+                }
+            }
+        }
+
+        function drawSettlingState() {
+            // We are drawing the "Top" bulb, but physically after rotation it is filled with the pile that was at bottom.
+            // We need to morph from "Pile Shape" (at the top now) to "Funnel Shape" (at the top).
+
+            // Pile Shape (inverted): Base is at Top Cap, Peak points down.
+            // Funnel Shape:  Base is at Top Surface, Tip points down to Neck.
+
+            // The visual effect requested: "End shape of lower sand pile falls down and morphs into start sand pile".
+            // Actually, after flip, the "bottom pile" is now at the "top" of the canvas.
+            // It looks like a mountain on the ceiling.
+            // It needs to "fall" / morph into the Funnel shape which fills the side walls.
+
+            ctx.lineWidth = LINE_WIDTH;
+            ctx.strokeStyle = STROKE_COLOR;
+            ctx.lineJoin = 'round';
+
+            // Params for interpolation
+            const t = settleProgress; // 0 -> 1
+
+            // --- 1. The Shape ---
+            // A. Start Shape (Old Pile, now inverted at top)
+            //    Base: Top of body (bodyTopY + padding?), Width: full width.
+            //    Peak: Pointing down, near bodyTopY + pileHeight.
+
+            // B. End Shape (Funnel)
+            //    Walls: Parallel to glass (Inset).
+            //    Surface: Flat/Wavy at top.
+
+            // Let's draw the "Container" shape by interpolating control points.
+
+            /* 
+               We will draw a shape defined by:
+               - Left Top Point
+               - Left Control Points -> Bottom Center
+               - Right Control Points -> Right Top Point
+            */
+
+            // Target (Funnel) Params
+            const sandTopY = getSandSurfaceY(); // Calculate for FULL sand
+            // Actually, topSandRatio should be resetting during this? Or we just calculate geometry for Ratio=Initial.
+            const targetSandHeight = bulbHeight * Math.pow(INITIAL_SAND, 0.5);
+            const targetSurfaceY = cy - targetSandHeight;
+
+            // Start (Pile) Params
+            // The pile had a specific height.
+            const maxPileHeight = bulbHeight * 0.6; // From flow state
+            const pileHeight = maxPileHeight * Math.pow(1.0, 1.8); // Full height
+            // Inverted position: Base is at bodyTopY (inverted floor). Peak is at bodyTopY + pileHeight.
+            const startSurfaceY = bodyTopY;
+            const startPeakY = bodyTopY + pileHeight;
+
+            // INTERPOLATION
+            // Y of "Surface" (Flat/Base):
+            // Start: bodyTopY. End: targetSurfaceY (lower down).
+            // But the user said "falls down".
+            // Actually, if we flip, the sand is at the top.
+            // It falls DOWN to fills the funnel.
+            // So surface Y moves from bodyTopY -> targetSurfaceY?? No, targetSurfaceY is the wavy top.
+
+            // Wait, the "Pile" base is the wide part. In the "Pile" shape, the wide part is at the Bottom (now Top).
+            // In the "Funnel" shape, the wide part is at the Top Surface.
+            // So the "Surface" line stays roughly similar (Top of body).
+
+            // The "Tip" / "Peak" is what changes.
+            // Pile Peak: Pointing DOWN (because flipped), at roughly 1/3 down the bulb.
+            // Funnel Tip: Pointing DOWN, at Neck (Cy).
+
+            // So we morph the "Peak Y" from (bodyTopY + pileHeight) -> (Cy).
+            // And we morph the "Side Walls" from "Curved Triangle" -> "Inset Glass Curves".
+
+            const currentTipY = startPeakY + (cy - startPeakY) * t;
+
+            // Side morphing is harder.
+            // Let's just interpolate the bezier control points.
+
+            // LEFT SIDE
+            // Start (Pile): 
+            //   MoveTo: (cx - HalfWidth, bodyTopY)
+            //   CurveTo: (cx, startPeakY) via Control (cx, startPeakY - 10?? Inverted pile logic)
+
+            // End (Funnel):
+            //   MoveTo: (cx - glassWidthTop/2 + Inset, bodyTopY)
+            //   CurveTo: (cx, cy) via Control (glass curve points)
+
+            // We need to match MoveTo points
+            const startLeftX = cx - (glassWidthTop / 2 - SAND_INSET);
+            // Funnel starts slightly lower generally (sandTopY), but let's assume it fills from top line.
+            // Wait, Funnel surface moves from sandTopY.
+            // So MoveTo Y also interpolates.
+
+            const currentBaseY = bodyTopY + (targetSurfaceY - bodyTopY) * t;
+
+            // Draw Walls
+            ctx.beginPath();
+
+            // Left Wall
+            ctx.moveTo(startLeftX, currentBaseY);
+
+            // Control points interpolation
+            // Pile: Quad curve (1 CP). Funnel: Cubic (2 CPs).
+            // We can approximate Pile as Cubic. CP1 = CP2 = (cx, startPeakY - 10)
+
+            const pileCP1x = cx;
+            const pileCP1y = startPeakY - 30; // "Up" from peak (inverted)
+
+            const funnelCP1x = cx - glassWidthTop / 2 + SAND_INSET;
+            const funnelCP1y = bodyTopY + bulbHeight * 0.5;
+            const funnelCP2x = cx - neckWidth / 2 - 10 + SAND_INSET;
+            const funnelCP2y = cy - bulbHeight * 0.2;
+
+            // Current CPs
+            const cp1x = pileCP1x + (funnelCP1x - pileCP1x) * t;
+            const cp1y = pileCP1y + (funnelCP1y - pileCP1y) * t;
+
+            // For Pile, we act like CP2 is same as CP1 roughly to mimic Quad
+            const pileCP2x = cx;
+            const pileCP2y = startPeakY - 30;
+
+            const cp2x = pileCP2x + (funnelCP2x - pileCP2x) * t;
+            const cp2y = pileCP2y + (funnelCP2y - pileCP2y) * t;
+
+            ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, cx, currentTipY);
+
+            // Right Wall (Symmetric)
+            const rightBaseX = cx + (glassWidthTop / 2 - SAND_INSET);
+
+            const r_pileCP1x = cx;
+            const r_funnelCP1x = cx + glassWidthTop / 2 - SAND_INSET;
+
+            const r_funnelCP2x = cx + neckWidth / 2 + 10 - SAND_INSET;
+
+            const r_cp1x = cx + (r_funnelCP1x - cx) * t; // Simplified symmetry
+            const r_cp2x = cx + (r_funnelCP2x - cx) * t;
+
+            // Right Side Curve
+            // From Tip back to Top Right
+            // CP2 (near tip) -> CP1 (near top) -> End
+
+            // We just mirror X relative to cx
+            ctx.bezierCurveTo(
+                width - cp2x, cp2y, // Mirror X
+                width - cp1x, cp1y,
+                rightBaseX, currentBaseY
+            );
+
+            // Top Surface (Line closing it)
+            // Pile has "Base" which is flat.
+            // Funnel has "Surface" which is wavy.
+            // Interpolate Flat -> Wave.
+
+            const surfaceWidth = rightBaseX - startLeftX;
+            const leftX = startLeftX;
+            const rightX = rightBaseX;
+
+            // Wavy controls
+            // Flat: CP1 = left, CP2 = right (linear)
+            // Wave: CP1 = left+w/4, -15. CP2 = right-w/4, +15.
+
+            const waveAmp = 15 * t; // 0 to 15
+
+            ctx.bezierCurveTo(
+                rightX - surfaceWidth / 4, currentBaseY + waveAmp,
+                leftX + surfaceWidth / 4, currentBaseY - waveAmp,
+                leftX, currentBaseY
+            );
+
+            ctx.stroke();
+        }
+
+        function updateAndDrawDroplets() {
+            ctx.fillStyle = STROKE_COLOR;
+            const progress = 1 - (topSandRatio / INITIAL_SAND);
+            const maxPileHeight = bulbHeight * 0.6;
+            const heightProg = Math.pow(progress, 1.8);
+            const currentPileHeight = maxPileHeight * heightProg;
+            const basePileY = bodyBottomY - LINE_WIDTH / 2;
+            const pilePeakY = basePileY - currentPileHeight;
+
+            // 1. Formation
+            if (topSandRatio > 0 && currentState === 'FLOWING') {
+                if (formingDroplet.max === 0) {
+                    if (formingDroplet.size >= 0) {
+                        formingDroplet.size = 2;
+                        formingDroplet.max = 5 + Math.random() * 4;
+                    } else {
+                        formingDroplet.size += FORMING_SPEED;
+                    }
+                }
+                else {
+                    if (formingDroplet.size < formingDroplet.max) {
+                        formingDroplet.size += FORMING_SPEED;
+                        if (formingDroplet.size > 0) {
+                            ctx.beginPath();
+                            ctx.arc(cx, cy + formingDroplet.size / 2, formingDroplet.size, 0, Math.PI * 2);
+                            ctx.fill();
+                        }
+                    } else {
+                        droplets.unshift({
+                            y: cy + formingDroplet.size,
+                            vy: 2,
+                            isElongated: Math.random() > 0.5,
+                            width: formingDroplet.size * 2,
+                            height: formingDroplet.size * 2,
+                            drift: (Math.random() - 0.5) * 0.5
+                        });
+                        formingDroplet.size = -3;
+                        formingDroplet.max = 0;
+                    }
+                }
+            }
+
+            // 2. Falling
+            for (let i = droplets.length - 1; i >= 0; i--) {
+                const d = droplets[i];
+                d.y += d.vy;
+                d.vy += 0.2;
+
+                if (d.isElongated && d.height < d.width * 3) {
+                    d.height += 0.3;
+                    d.width -= 0.05;
+                }
+
+                if (d.y >= pilePeakY - 5) {
+                    droplets.splice(i, 1);
+                    continue;
+                }
+
+                // Fall off screen if pile is low or empty
+                if (d.y > height) {
+                    droplets.splice(i, 1);
+                    continue;
+                }
+
+                ctx.beginPath();
+                if (d.isElongated) {
+                    ctx.ellipse(cx + d.drift, d.y, Math.max(1, d.width / 2), Math.max(1, d.height / 2), 0, 0, Math.PI * 2);
+                } else {
+                    ctx.arc(cx + d.drift, d.y, d.width / 2, 0, Math.PI * 2);
+                }
+                ctx.fill();
+            }
+        }
+
+        function animate() {
+            ctx.clearRect(0, 0, width, height);
+
+            drawHourglassOutline();
+
+            if (currentState === 'FLOWING') {
+                drawFlowingState();
+                updateAndDrawDroplets();
+
+                if (topSandRatio > 0) {
+                    topSandRatio -= sandFlowRate;
+                    if (topSandRatio < 0) topSandRatio = 0;
+                } else {
+                    // Start Wait
+                    currentState = 'WAITING';
+                    setTimeout(() => {
+                        currentState = 'FLIPPING';
+                        // Trigger CSS rotation - 50% faster (0.6s)
+                        canvas.style.transition = 'transform 0.6s ease-in-out';
+                        canvas.style.transform = `rotate(180deg)`;
+
+                        setTimeout(() => {
+                            // After rotation finishes
+                            // 1. Snap back to 0 instantly
+                            canvas.style.transition = 'none';
+                            canvas.style.transform = 'rotate(0deg)';
+
+                            // 2. Start Morph
+                            currentState = 'SETTLING';
+                            settleProgress = 0;
+
+                        }, 600); // Match 0.6s transition
+                    }, 2000); // 2 second pause before flip
+                }
+            }
+            else if (currentState === 'WAITING') {
+                drawFlowingState();
+                updateAndDrawDroplets();
+            }
+            else if (currentState === 'FLIPPING') {
+                drawFlowingState();
+            }
+            else if (currentState === 'SETTLING') {
+                drawSettlingState();
+
+                settleProgress += 0.045; // 3x Faster Morph speed
+                if (settleProgress >= 1) {
+                    // Reset to clean state
+                    currentState = 'FLOWING';
+                    topSandRatio = INITIAL_SAND;
+
+                    // Reset Droplets
+                    droplets.length = 0;
+                    formingDroplet = { size: -3, max: 0 };
+                }
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        // Special handling for the Flip-Reset-Morph sequence
+        // We moved logic inside the loop but we need the 'Snap' event.
+        // We handle it in the timeout above.
+
+        // Correcting the loop logic in animate():
+        /*
+          When FLIPPING ends:
+          1. Canvas is 180deg.
+          2. We want to start SETTLING (Morph).
+          3. We set Rotation to 0 (no transition).
+          4. We set currentState = 'SETTLING'.
+             At this moment, we must ensure what we draw looks like what was there before snap.
+             Before Snap: (Rotated 180) -> We see Bottom Pile at Top of Screen.
+             After Snap: (Rotated 0) -> We draw "Pile Shape" at Top of local coords.
+             Yes, drawSettlingState() draws the "Inverted Pile" at the Top.
+             So checking:
+             Canvas 180: Bottom Pile (y=600) is at Screen Top.
+             Snap to 0: We draw "Inverted Pile" at y=60 (Top).
+             Does Bottom Pile look like Inverted Pile?
+             Bottom Pile: Flat base on glass bottom, peak pointing up.
+             Rotated 180: Flat base on glass top, peak pointing down.
+             Inverted Pile (drawSettlingState): Top-aligned, Peak pointing down.
+             MATCHES!
+             
+             So the plan:
+             1. Rotate 180 (CSS 1s)
+             2. On finish:
+                - canvas.style.transition = 'none'
+                - canvas.style.transform = 'rotate(0deg)'
+                - force reflow/repaint?
+                - currentState = 'SETTLING'
+             3. Run Morph (1s)
+             4. On finish:
+                - canvas.style.transition = 'transform 1s ease-in-out'
+                - currentState = 'FLOWING'
+                 
+        */
+
+        // Override timeout logic from main loop for cleaner structure
+        // We need to manage transitions strictly
+
+        // ... (Replaced by code below)
+        animate();
+
+        // Watcher for state changes would be better, but let's just use the loop & flags
+        let transitionResetPending = false;
+
+    </script>
+</body>
+
+</html>
